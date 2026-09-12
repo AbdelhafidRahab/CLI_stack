@@ -1,0 +1,26 @@
+# compiled C output
+*.o
+*.a
+*.so
+*.out
+*.exe
+
+# binaries we build (source stays in shell/, tools/, term/)
+bin/
+hello
+uthsh
+uth-echo
+uth-cat
+uth-grep
+
+# debug leftovers
+vgcore.*
+core
+*.dSYM/
+
+# editor / OS junk
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
