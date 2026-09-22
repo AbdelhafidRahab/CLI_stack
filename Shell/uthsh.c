@@ -4,7 +4,6 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-
 #define LINE_MAX 4096
 #define MAX_ARGS 64
 
@@ -67,6 +66,32 @@ static void run_command(char *argv[]) {
     }
 }
 
+static int handle_builtin(char *argv[]) {
+    if (strcmp(argv[0], "exit") == 0) {
+        return 1;
+    }
+
+    if (strcmp(argv[0], "cd") == 0) {
+        const char *path = argv[1];
+
+        if (path == NULL) {
+            path = getenv("HOME");
+            if (path == NULL) {
+                fprintf(stderr, "cd: HOME is not set\n");
+                return 0;
+            }
+        }
+
+        if (chdir(path) != 0) {
+            perror("cd");
+        }
+
+        return 0;
+    }
+
+    return -1; /* not a builtin — run it as a program */
+}
+
 int main(void) {
     char line[LINE_MAX];
     
@@ -88,8 +113,15 @@ int main(void) {
 
         char *argv[MAX_ARGS];
         int argc = split_line(line, argv, MAX_ARGS);
-
         if (argc == 0) {
+            continue;
+        }
+
+        int builtin = handle_builtin(argv);
+        if (builtin == 1) {
+            break;
+        }
+        if (builtin == 0) {
             continue;
         }
 
