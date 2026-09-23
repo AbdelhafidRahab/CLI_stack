@@ -89,6 +89,16 @@ static int handle_builtin(char *argv[]) {
         return 0;
     }
 
+    if (strcmp(argv[0], "pwd") == 0) {
+        char cwd[4096];
+        if (getcwd(cwd, sizeof cwd) == NULL) {
+            perror("pwd");
+            return 0;
+        }
+        printf("%s\n", cwd);
+        return 0;
+    }
+
     return -1; /* not a builtin — run it as a program */
 }
 
