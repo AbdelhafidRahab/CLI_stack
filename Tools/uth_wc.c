@@ -8,7 +8,7 @@ static void count_stream(FILE *in, int *lines, int *words, int *bytes) {
     *words = 0;
     *bytes = 0;
 
-    while ((c = fgetc(in)) != E0F) {
+    while ((c = fgetc(in)) != EOF) {
         (*bytes)++;
 
         if (c == '\n') {
@@ -16,7 +16,7 @@ static void count_stream(FILE *in, int *lines, int *words, int *bytes) {
         }
 
         if (c == ' ' || c == '\t' || c == '\n') {
-            in_word = 0
+            in_word = 0;
         }else if (!in_word) { // means: this byte is not a separator, and we were not already inside a word. So this is the first byte of a new word. 
             in_word = 1;
             (*words)++;
