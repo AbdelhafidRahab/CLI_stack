@@ -40,20 +40,30 @@ static int split_line(char *line, char *argv[], int max_args) {
     return argc;
 }
 
-static int take_redirects(char *argv[], char **outfile) {
+static int take_redirects(char *argv[], char **infile,char **outfile) {
     char *kept[MAX_ARGS];
     int n = 0;
 
+    *infile = NULL;
     *outfile = NULL;
 
     for (int i = 0; argv[i] != NULL ; i++) {
         if (strcmp(argv[i], ">") == 0) {
-            if (argv[i +1] == NULL) {
+            if (argv[i + 1] == NULL) {
                 fprintf(stderr, "syntax error: > needs a file\n");
                 return -1;
             }
 
             *outfile = argv[i + 1];
+            i++;
+            continue;
+        }
+        if (strcmp(argv[i], "<") == 0) {
+            if (argv[i + 1] == NULL) {
+                fprintf(stderr, "syntax error: < needs a file\n");
+                return -1;
+            }
+            *infile = argv[i + 1];
             i++;
             continue;
         }
@@ -68,45 +78,59 @@ static int take_redirects(char *argv[], char **outfile) {
     return n;
 }
 
-static int apply_redirects(const char *outfile) {
-    if (outfile == NULL) {
-        return 0;
-    }
-
-    /* 
-        This | means “turn on all of these bits”.
-        - O_WRONLY : write only. This descriptor cannot read the file.
-        - O_CREAT : if the path does not exist, create it.
-        - O_TRUNC : if the path exists, make it empty before writing.
-    */
-
-    /*
-        0644, is the permission used only when the file is created.
-        - The leading 0 means this number is octal (base 8), not decimal.
-        - The three digits are owner, group, everyone else. 6 is read+write for you. 4 is read-only for your group. 4 is read-only for everyone else. 
-    */
-    int fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    // If open fails, it returns -1.
-    if (fd < 0) {
-        perror(outfile);
-        return -1;
-    }
-
-    // makes descriptor 1 refer to the same open file as fd. After this, printf, fputs, and putchar in the child go into the file. The terminal is no longer descriptor 1 in that child.
-    // Then close(fd). Descriptor 1 already points at the file, so the extra number is not needed. Close it. 
-    if (dup2(fd, STDOUT_FILENO) < 0) {
-        perror("dup2");
+static int apply_redirects(const char *infile, const char *outfile) {
+    if (infile != NULL) {
+        /*
+            O_RDONLY means read only. There is no O_CREAT. If the file is missing, open fails and perror prints the reason.
+        */
+        int fd = open(infile, O_RDONLY);
+        if (fd < 0) {
+            perror(infile);
+            return -1;
+        }
+        /*
+            dup2(fd, STDIN_FILENO) makes descriptor 0 refer to that file. The child no longer reads the keyboard. 
+        */
+        if (dup2(fd, STDIN_FILENO) < 0) {
+            perror("dup2");
+            close(fd);
+            return -1;
+        }
         close(fd);
-        return -1;
     }
 
+    if (outfile != NULL) {
+        /* 
+            This | means “turn on all of these bits”.
+            - O_WRONLY : write only. This descriptor cannot read the file.
+            - O_CREAT : if the path does not exist, create it.
+            - O_TRUNC : if the path exists, make it empty before writing.
+        */
 
-    close(fd);
+        /*
+            0644, is the permission used only when the file is created.
+            - The leading 0 means this number is octal (base 8), not decimal.
+            - The three digits are owner, group, everyone else. 6 is read+write for you. 4 is read-only for your group. 4 is read-only for everyone else. 
+        */
+        int fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        // If open fails, it returns -1.
+        if (fd < 0) {
+            perror(outfile);
+            return -1;
+        }
+        // makes descriptor 1 refer to the same open file as fd. After this, printf, fputs, and putchar in the child go into the file. The terminal is no longer descriptor 1 in that child.
+        // Then close(fd). Descriptor 1 already points at the file, so the extra number is not needed. Close it. 
+        if (dup2(fd, STDOUT_FILENO) < 0) {
+            perror("dup2");
+            close(fd);
+            return -1;
+        }
+        close(fd);
+    }
     return 0;
-
 }
 
-static void run_command(char *argv[], const char *outfile) {
+static void run_command(char *argv[], const char *infile, const char *outfile) {
     pid_t pid = fork();
 
     /* If the clone failed, pid is -1 */
@@ -120,7 +144,7 @@ static void run_command(char *argv[], const char *outfile) {
         This block runs in the child only, because only the child got 0 from fork
     */
     if (pid == 0) {
-        if (apply_redirects(outfile) < 0) {
+        if (apply_redirects(infile, outfile) < 0) {
             _exit(1);
         }
         // If execvp works, it never returns. The child is no longer uthsh. It is ls, or uth-echo, or whatever the user typed.
@@ -201,8 +225,9 @@ int main(void) {
             continue;
         }
 
+        char *infile = NULL;
         char *outfile = NULL;
-        if (take_redirects(argv, &outfile) < 0) {
+        if (take_redirects(argv, &infile, &outfile) < 0) {
             continue;
         }
 
@@ -211,7 +236,7 @@ int main(void) {
             continue;
         }
 
-        if (outfile != NULL && is_builtin(argv[0])) {
+        if ((infile != NULL || outfile != NULL) && is_builtin(argv[0])) {
             fprintf(stderr, "redirection on a builtin is not exist yet\n");
             continue;
         }
@@ -224,7 +249,7 @@ int main(void) {
             continue;
         }
 
-        run_command(argv, outfile);
+        run_command(argv, infile, outfile);
     }
 
     return 0;
