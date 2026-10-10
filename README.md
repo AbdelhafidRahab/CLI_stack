@@ -8,7 +8,7 @@ This one is the command-line stack: the window you type in, the program that rea
 
 | Part | What it is | Status |
 |------|------------|--------|
-| Shell (`uthsh`) | Reads a command line and runs programs. Builtins: `exit`, `cd`, `pwd` | Working |
+| Shell (`uthsh`) | Reads a command line and runs programs. Builtins: `exit`, `cd`, `pwd`. One `<`, one `>`, and one `\|` per line | Working |
 | CLI tools | Small programs the shell runs | `uth_echo`, `uth_cat`, `uth_head`, `uth_tail`, `uth_grep`, `uth_wc` work |
 | Terminal (`uth-term`) | Window that shows text and sends keys to the shell | Not started |
 
@@ -60,6 +60,8 @@ gcc -std=c11 -Wall -Wextra -o bin/uthsh Shell/uthsh.c
 ```
 
 Inside `uthsh`, `ls` starts the system `ls`. A name with a slash starts a tool in this repo, for example `bin/uth_cat Tools/sample.txt`. `cd`, `pwd`, and `exit` are handled by the shell itself.
+
+`<` reads a program's input from a file. `>` writes its normal output to a file. `|` connects the output of one program to the input of the next. Spaces are required around those three characters. A line can contain one of each.
 
 ## Requirements
 
