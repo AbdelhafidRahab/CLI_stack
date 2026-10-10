@@ -130,6 +130,113 @@ static int apply_redirects(const char *infile, const char *outfile) {
     return 0;
 }
 
+static int split_pipe(char *argv[], char *left[], char *right[]) {
+    int bars = 0;
+    int at = -1;
+
+    for (int i = 0; argv[i] != NULL; i++) {
+        if (strcmp(argv[i], "|") == 0) {
+            bars++;
+            at = i;
+        }
+    }
+
+    if (bars == 0) {
+        return 0;
+    }
+
+    if (bars > 1) {
+        fprintf(stderr, "only one | in this phase\n");
+        return -1;
+    }
+
+    if (at == 0 || argv[at + 1] == NULL) {
+        fprintf(stderr, "syntax error: | needs a command on each side\n");
+        return -1;
+    }
+
+    int n = 0;
+    for (int i = 0; i < at; i++) {
+        left[n++] = argv[i];
+    }
+    left[n] = NULL;
+
+    n = 0;
+    for (int i = at + 1; argv[i] != NULL; i++) {
+        right[n++] = argv[i];
+    }
+    right[n] = NULL;
+    return 1;
+}
+
+static void run_pipe(char *left[], const char *left_in, const char *left_out, char *right[], const char *right_in, const char *right_out) {
+    int pipefd[2];
+    if (pipe(pipefd) < 0) {
+        perror("pipe");
+        return;
+    }
+
+    pid_t left_pid = fork();
+    if (left_pid < 0) {
+        perror("fork");
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return;
+    }
+
+    if (left_pid == 0) {
+        if (dup2(pipefd[1], STDOUT_FILENO) < 0) {
+            perror("dup2");
+            _exit(1);
+        }
+        close(pipefd[0]);
+        close(pipefd[1]);
+
+        if (apply_redirects(left_in, left_out) < 0) {
+            _exit(1);
+        }
+        execvp(left[0], left);
+        perror(left[0]);
+        _exit(127);
+    }
+
+    pid_t right_pid = fork();
+    if (right_pid < 0) {
+        perror("fork");
+        close(pipefd[0]);
+        close(pipefd[1]);
+        int status = 0;
+        waitpid(left_pid, &status, 0);
+        return;
+    }
+
+    if (right_pid == 0) {
+        if (dup2(pipefd[0], STDIN_FILENO) < 0) {
+            perror("dup2");
+            _exit(1);
+        }
+        close(pipefd[0]);
+        close(pipefd[1]);
+        if (apply_redirects(right_in, right_out) < 0) {
+            _exit(1);
+        }
+        execvp(right[0], right);
+        perror(right[0]);
+        _exit(127);
+    }
+
+    close(pipefd[0]);
+    close(pipefd[1]);
+
+    int status = 0;
+    if (waitpid(left_pid, &status, 0) < 0) {
+        perror("waitpid");
+    }
+    if (waitpid(right_pid, &status, 0) < 0) {
+        perror("waitpid");
+    }
+}
+
 static void run_command(char *argv[], const char *infile, const char *outfile) {
     pid_t pid = fork();
 
@@ -222,6 +329,31 @@ int main(void) {
         char *argv[MAX_ARGS];
         int argc = split_line(line, argv, MAX_ARGS);
         if (argc == 0) {
+            continue;
+        }
+
+        char *left[MAX_ARGS];
+        char *right[MAX_ARGS];
+        int piped = split_pipe(argv, left, right);
+        if (piped < 0) {
+            continue;
+        }
+        if (piped == 1) {
+            char *left_in = NULL;
+            char *left_out = NULL;
+            char *right_in = NULL;
+            char *right_out = NULL;
+            if (take_redirects(left, &left_in, &left_out) < 0) {
+                continue;
+            }
+            if (take_redirects(right, &right_in, &right_out) < 0) {
+                continue;
+            }
+            if (left[0] == NULL || right[0] == NULL) {
+                fprintf(stderr, "syntax error: | needs a command on each side\n");
+                continue;
+            }
+            run_pipe(left, left_in, left_out, right, right_in, right_out);
             continue;
         }
 
