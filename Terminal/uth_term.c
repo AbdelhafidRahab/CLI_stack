@@ -1,4 +1,6 @@
 #define _XOPEN_SOURCE 600
+#define MAX_ROWS 64
+#define MAX_COLS 200
 
 #include <errno.h>
 #include <fcntl.h>
@@ -10,8 +12,127 @@
 #include <termios.h>
 #include <unistd.h>
 
+struct cell {
+    char ch;
+};
+
+struct screen {
+    struct cell cells[MAX_ROWS][MAX_COLS];
+    int rows;
+    int cols;
+    int cur_r;
+    int cur_c;
+    int skipping;
+};
+
 static struct termios orig_termios;
 static int termios_saved = 0;
+
+static void cell_clear(struct cell *cell) {
+    cell->ch = ' ';
+}
+
+static void screen_clear(struct screen *s) {
+    for (int r = 0; r < s->rows; r++) {
+        for (int c = 0; c < s->cols; c++) {
+            cell_clear(&s->cells[r][c]);
+        }
+    }
+}
+
+static void screen_init(struct screen *s, int rows, int cols) {
+    if (rows < 1) {
+        rows = 1;
+    }
+    if (cols < 1) {
+        cols = 1;
+    }
+    if (rows > MAX_ROWS) {
+        rows = MAX_ROWS;
+    }
+    if (cols > MAX_COLS) {
+        cols = MAX_COLS;
+    }
+    s->rows = rows;
+    s->cols = cols;
+    s->cur_r = 0;
+    s->cur_c = 0;
+    s->skipping = 0;
+    screen_clear(s);
+}
+
+static void screen_scroll(struct screen *s) {
+    for (int r = 0; r < s->rows - 1; r++) {
+        for (int c = 0; c < s->cols; c++) {
+            s->cells[r][c] = s->cells[r + 1][c];
+        }
+    }
+    for (int c = 0; c < s->cols; c++) {
+        cell_clear(&s->cells[s->rows - 1][c]);
+    }
+    s->cur_r = s->rows - 1;
+}
+
+static void screen_newline(struct screen *s) {
+    s->cur_c = 0;
+    s->cur_r++;
+    if (s->cur_r >= s->rows) {
+        screen_scroll(s);
+    }
+}
+
+static void screen_put(struct screen *s, char ch) {
+    if (s->cur_c >= s->cols) {
+        s->cur_c = 0;
+        s->cur_r++;
+        if (s->cur_r >= s->rows) {
+            screen_scroll(s);
+        }
+    }
+    s->cells[s->cur_r][s->cur_c].ch = ch;
+    s->cur_c++;
+}
+
+static void screen_feed(struct screen *s, unsigned char ch) {
+    if (s->skipping) {
+        if (ch >= '@' && ch <= '~') {
+            s->skipping = 0;
+        }
+        return;
+    }
+    if (ch == 27) {
+        s->skipping = 1;
+        return;
+    }
+    if (ch == '\n') {
+        screen_newline(s);
+        return;
+    }
+    if (ch == '\r') {
+        s->cur_c = 0;
+        return;
+    }
+    if (ch == '\b') {
+        if (s->cur_c > 0) {
+            s->cur_c--;
+        }
+        return;
+    }
+    if (ch == '\t') {
+        int next = s->cur_c + 1;
+        while (next % 8 != 0) {
+            next++;
+        }
+        if (next > s->cols) {
+            next = s->cols;
+        }
+        s->cur_c = next;
+        return;
+    }
+    if (ch >= 32 && ch < 127) {
+        screen_put(s, (char)ch);
+    }
+}
 
 static void restore_termios(void) {
     if (termios_saved) {
@@ -37,6 +158,22 @@ static void write_all(int fd, const char *buf, size_t n) {
         }
         off += (size_t)w;
     }
+}
+
+static void screen_redraw(struct screen *s) {
+    write_all(STDOUT_FILENO, "\033[H", 3);
+    for (int r = 0; r < s->rows; r++) {
+        char seq[32];
+        int n = snprintf(seq, sizeof seq, "\033[%d;1H", r + 1);
+        write_all(STDOUT_FILENO, seq, (size_t)n);
+        for (int c = 0; c < s->cols; c++) {
+            char ch = s->cells[r][c].ch;
+            write_all(STDOUT_FILENO, &ch, 1);
+        }
+    }
+    char seq[32];
+    int n = snprintf(seq, sizeof seq, "\033[%d;%dH", s->cur_r + 1, s->cur_c + 1);
+    write_all(STDOUT_FILENO, seq, (size_t)n);
 }
 
 static int set_raw_input(void) {
@@ -137,6 +274,15 @@ int main(void) {
 
     copy_winsize(master);
 
+    struct screen screen;
+    struct winsize ws;
+    if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0) {
+        screen_init(&screen, ws.ws_row, ws.ws_col);
+    } else {
+        screen_init(&screen, 24, 80);
+    }
+    write_all(STDOUT_FILENO, "\033[2J", 4);
+
     pid_t pid = start_shell(master, slave_name);
     if (pid < 0) {
         close(master);
@@ -181,7 +327,10 @@ int main(void) {
             if (n <= 0) {
                 break;
             }
-            write_all(STDOUT_FILENO, buf, (size_t)n);
+            for (ssize_t i = 0; i < n; i++) {
+                screen_feed(&screen, (unsigned char)buf[i]);
+            }
+            screen_redraw(&screen);
         }
     }
 
