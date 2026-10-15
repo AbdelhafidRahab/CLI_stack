@@ -36,6 +36,7 @@ struct screen {
 
 static struct termios orig_termios;
 static int termios_saved = 0;
+static volatile sig_atomic_t winch_flag = 0;
 
 static void cell_clear(struct cell *cell) {
     cell->ch = ' ';
@@ -75,6 +76,30 @@ static void screen_init(struct screen *s, int rows, int cols) {
     s->current = 0;
     s->has_digit = 0;
     s->question = 0;
+    screen_clear(s);
+}
+
+static void screen_resize(struct screen *s, int rows, int cols) {
+    if (rows < 1) {
+        rows = 1;
+    }
+    if (cols < 1) {
+        cols = 1;
+    }
+    if (rows > MAX_ROWS) {
+        rows = MAX_ROWS;
+    }
+    if (cols > MAX_COLS) {
+        cols = MAX_COLS;
+    }
+    s->rows = rows;
+    s->cols = cols;
+    if (s->cur_r >= s->rows) {
+        s->cur_r = s->rows - 1;
+    }
+    if (s->cur_c >= s->cols) {
+        s->cur_c = s->cols - 1;
+    }
     screen_clear(s);
 }
 
@@ -460,6 +485,11 @@ static pid_t start_shell(int master, const char *slave_name) {
     return pid;
 }
 
+static void on_winch(int signo) {
+    (void)signo;
+    winch_flag = 1;
+}
+
 int main(void) {
     char slave_name[128];
     int master = open_master(slave_name, sizeof slave_name);
@@ -497,6 +527,8 @@ int main(void) {
     pfds[1].fd = master;
     pfds[1].events = POLLIN;
 
+    signal(SIGWINCH, on_winch);
+
     for (;;) {
         int ready = poll(pfds, 2, -1);
         if (ready < 0) {
@@ -505,6 +537,17 @@ int main(void) {
             }
             perror("poll");
             break;
+        }
+
+        if (winch_flag) {
+            winch_flag = 0;
+            struct winsize ws;
+            if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0) {
+                screen_resize(&screen, ws.ws_row, ws.ws_col);
+                ioctl(master, TIOCSWINSZ, &ws);
+                write_all(STDOUT_FILENO, "\033[2J", 4);
+                screen_redraw(&screen);
+            }
         }
 
         if (pfds[0].revents & POLLIN) {
