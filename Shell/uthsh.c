@@ -1,3 +1,10 @@
+/* uthsh
+   Prompt, read one line, do it, repeat.
+   exit, cd, and pwd run in this process. Any other name is started
+   as its own program. One <, one >, and one | per line.
+   A builtin plus a redirect is refused: dup2 here would point the
+   shell's own screen at the file. */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +47,9 @@ static int split_line(char *line, char *argv[], int max_args) {
     return argc;
 }
 
+/* Pull < file and > file out of the word list.
+   Afterwards argv is only the program and its real arguments.
+   The for-loop also increments i, so the extra i++ jumps over the path. */
 static int take_redirects(char *argv[], char **infile,char **outfile) {
     char *kept[MAX_ARGS];
     int n = 0;
@@ -78,6 +88,9 @@ static int take_redirects(char *argv[], char **infile,char **outfile) {
     return n;
 }
 
+/* Point stdin and stdout at the redirect files.
+   Call this in the child only, after fork and before exec.
+   The parent shell must keep its own descriptors on the terminal. */
 static int apply_redirects(const char *infile, const char *outfile) {
     if (infile != NULL) {
         /*
@@ -130,6 +143,9 @@ static int apply_redirects(const char *infile, const char *outfile) {
     return 0;
 }
 
+/* Cut the words at one |.
+   0 means there is no pipe. 1 means left[] and right[] are filled.
+   -1 means the line is wrong and the caller should print the prompt again. */
 static int split_pipe(char *argv[], char *left[], char *right[]) {
     int bars = 0;
     int at = -1;
@@ -169,6 +185,14 @@ static int split_pipe(char *argv[], char *left[], char *right[]) {
     return 1;
 }
 
+/* Connect two programs.
+   pipefd[1] is the write end, pipefd[0] is the read end.
+   The left child writes there, the right child reads there.
+   Both children, and this parent, close the ends they do not use.
+   If the parent keeps the write end open, the right program never
+   sees end-of-file and the prompt does not come back.
+   apply_redirects runs after the pipe is attached, so a > on that
+   command replaces the pipe for that command's stdout. */
 static void run_pipe(char *left[], const char *left_in, const char *left_out, char *right[], const char *right_in, const char *right_out) {
     int pipefd[2];
     if (pipe(pipefd) < 0) {
@@ -184,6 +208,7 @@ static void run_pipe(char *left[], const char *left_in, const char *left_out, ch
         return;
     }
 
+    /* Left child: stdout is the pipe, then become the left program. */
     if (left_pid == 0) {
         if (dup2(pipefd[1], STDOUT_FILENO) < 0) {
             perror("dup2");
@@ -210,6 +235,7 @@ static void run_pipe(char *left[], const char *left_in, const char *left_out, ch
         return;
     }
 
+    /* Right child: stdin is the pipe, then become the right program. */
     if (right_pid == 0) {
         if (dup2(pipefd[0], STDIN_FILENO) < 0) {
             perror("dup2");
@@ -225,6 +251,7 @@ static void run_pipe(char *left[], const char *left_in, const char *left_out, ch
         _exit(127);
     }
 
+    /* Parent does not read or write the pipe. Wait for both children. */
     close(pipefd[0]);
     close(pipefd[1]);
 
@@ -267,10 +294,14 @@ static void run_command(char *argv[], const char *infile, const char *outfile) {
     }
 }
 
+/* True for the three commands that must not be a separate process. */
 static int is_builtin(const char *name) {
     return strcmp(name, "exit") == 0 || strcmp(name, "cd") == 0 || strcmp(name, "pwd") == 0;
 }
 
+/* Run exit, cd, or pwd here.
+   1 means leave the prompt loop. 0 means it was a builtin and it is done.
+   -1 means this name is a program, so the caller should fork. */
 static int handle_builtin(char *argv[]) {
     if (strcmp(argv[0], "exit") == 0) {
         return 1;
@@ -332,6 +363,8 @@ int main(void) {
             continue;
         }
 
+        /* A pipe is handled before builtins. pwd on the left of |
+           becomes the system pwd, because a pipe needs its own process. */
         char *left[MAX_ARGS];
         char *right[MAX_ARGS];
         int piped = split_pipe(argv, left, right);

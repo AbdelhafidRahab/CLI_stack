@@ -1,3 +1,9 @@
+/* uth_tail
+   Print the last TAIL_LINES lines.
+   The stream only moves forward, so the last lines are kept in a ring:
+   once it is full, the next line overwrites the oldest slot.
+   No -n yet. The count is fixed at 10. */
+
 #include <stdio.h>
 #include <string.h>
 
@@ -18,6 +24,9 @@ static void print_tail(FILE *in) {
         }
     }
 
+    /* If the ring never filled, line 0 is the oldest.
+       If it filled, next is the slot that is about to be reused, which
+       is also the oldest line still stored. */
     int start = (count < TAIL_LINES) ? 0 : next;
     for (int i = 0; i < count; i++) {
         fputs(lines[(start + i) % TAIL_LINES], stdout);

@@ -1,8 +1,14 @@
+/* uth_head
+   Print the first HEAD_LINES lines, then stop.
+   A short file is not an error: we just print what is there.
+   No -n yet. The count is fixed at 10. */
+
 #include <stdio.h>
 
 #define LINE_MAX 4096
 #define HEAD_LINES 10
 
+/* fgets keeps the newline, and fputs writes it back unchanged. */
 static void print_head(FILE *in) {
     char line[LINE_MAX];
     int printed = 0;

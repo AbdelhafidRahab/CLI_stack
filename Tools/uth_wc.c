@@ -1,5 +1,13 @@
+/* uth_wc
+   Count newlines, words, and bytes.
+   A word is a run of bytes that are not space, tab, or newline.
+   With a path, the path is printed after the counts. With no path,
+   stdin is counted and no path is printed. */
+
 #include <stdio.h>
 
+/* The three counts live in main. These pointers are how this
+   function writes all three back. A return can only carry one value. */
 static void count_stream(FILE *in, int *lines, int *words, int *bytes) {
     int c;
     int in_word = 0; // is a flag. 0 means “I am not inside a word right now”. 1 means “the last bytes I saw are part of a word”

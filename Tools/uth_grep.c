@@ -1,8 +1,14 @@
+/* uth_grep
+   Print each line that contains the pattern as plain text.
+   err matches "error". . and * are not special.
+   No file means read the keyboard, or whatever a pipe fed us. */
+
 #include <stdio.h>
 #include <string.h>
 
 #define LINE_MAX 4096
 
+/* strstr finds the pattern anywhere in the line. NULL means no match. */
 static void grep_stream(FILE *in, const char *pattern) {
     char line[LINE_MAX];
 

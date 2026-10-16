@@ -1,3 +1,13 @@
+/* uth_term
+   Runs inside the terminal you started it from. That terminal is only
+   the glass. This program owns the grid and the fake keyboard cable.
+   It asks Linux for a PTY, starts bin/uthsh on the slave end, and
+   copies keys to that end. Bytes coming back are stored in cells
+   (normal characters, plus a small set of color and cursor commands)
+   and then painted to the glass.
+   Start it from the repo root: it execs bin/uthsh, which is a relative path.
+   _XOPEN_SOURCE must stay above the includes or posix_openpt stays hidden. */
+
 #define _XOPEN_SOURCE 600
 #define MAX_ROWS 64
 #define MAX_COLS 200
@@ -12,12 +22,18 @@
 #include <termios.h>
 #include <unistd.h>
 
+/* One character on the grid, plus the look it was given when stored.
+   fg is 30-37, or -1 for the normal color. bold is 0 or 1. */
 struct cell {
     char ch;
     int fg;
     int bold;
 };
 
+/* The visible grid, capped at MAX_ROWS by MAX_COLS.
+   cur_r / cur_c are 0-based. fg and bold are the look of the NEXT character.
+   state is the escape parser: 0 normal, 1 we just saw ESC, 2 we are inside ESC [.
+   params holds the numbers in that sequence. current is the number still being read.*/
 struct screen {
     struct cell cells[MAX_ROWS][MAX_COLS];
     int rows;
@@ -34,6 +50,9 @@ struct screen {
     int question;
 };
 
+/* Saved keyboard settings, so exit can put the outer terminal back.
+   winch_flag is set from the resize signal. The handler must not do
+   more than that. volatile so the loop actually re-reads it. */
 static struct termios orig_termios;
 static int termios_saved = 0;
 static volatile sig_atomic_t winch_flag = 0;
@@ -52,6 +71,7 @@ static void screen_clear(struct screen *s) {
     }
 }
 
+/* Clamp into the arrays. A 0-size window would make the cursor illegal. */
 static void screen_init(struct screen *s, int rows, int cols) {
     if (rows < 1) {
         rows = 1;
@@ -79,6 +99,8 @@ static void screen_init(struct screen *s, int rows, int cols) {
     screen_clear(s);
 }
 
+/* New size, cursor pulled back inside it, cells wiped.
+   Keeping the old text across a resize leaves torn lines. */
 static void screen_resize(struct screen *s, int rows, int cols) {
     if (rows < 1) {
         rows = 1;
@@ -103,6 +125,8 @@ static void screen_resize(struct screen *s, int rows, int cols) {
     screen_clear(s);
 }
 
+/* Cursor commands treat a missing number and a 0 as the default.
+   ESC [ H is row 1, column 1. */
 static int screen_param(struct screen *s, int index, int fallback) {
     if (index >= s->nparams) {
         return fallback;
@@ -113,6 +137,9 @@ static int screen_param(struct screen *s, int index, int fallback) {
     return s->params[index];
 }
 
+/* The m command: the look of the following characters, not a move.
+   0 resets, 1 bold, 22 bold off, 30-37 foreground, 39 default foreground.
+   Background and bright colors are ignored. */
 static void screen_sgr(struct screen *s) {
     if (s->nparams == 0) {
         s->fg = -1;
@@ -136,6 +163,8 @@ static void screen_sgr(struct screen *s) {
     }
 }
 
+/* Used after a cursor-move command. screen_put does not use this:
+   it is allowed to sit just past the last column so the next character wraps. */
 static void screen_clamp(struct screen *s) {
     if (s->cur_r < 0) {
         s->cur_r = 0;
@@ -151,6 +180,10 @@ static void screen_clamp(struct screen *s) {
     }
 }
 
+/* Finished ESC [ ... letter.
+   H/f place the cursor (numbers in the sequence are 1-based).
+   A/B/C/D move up/down/right/left. J clears, K clears the rest of the row.
+   A ? sequence was only consumed so its letters do not become cells. */
 static void screen_csi(struct screen *s, unsigned char cmd) {
     if (s->question) {
         return;
@@ -210,6 +243,7 @@ static void screen_csi(struct screen *s, unsigned char cmd) {
     }
 }
 
+/* Drop the top row, shift the rest up, blank the last row. */
 static void screen_scroll(struct screen *s) {
     for (int r = 0; r < s->rows - 1; r++) {
         for (int c = 0; c < s->cols; c++) {
@@ -230,6 +264,7 @@ static void screen_newline(struct screen *s) {
     }
 }
 
+/* Store one visible character and the look that is current right now. */
 static void screen_put(struct screen *s, char ch) {
     if (s->cur_c >= s->cols) {
         s->cur_c = 0;
@@ -251,6 +286,11 @@ static void parser_reset(struct screen *s) {
     s->question = 0;
 }
 
+/* One byte from the shell.
+   state 1: the previous byte was ESC. '[' starts a sequence, anything else is dropped.
+   state 2: digits and ';' build the numbers. A byte from '@' to '~' ends it.
+   Otherwise the byte is a character or a simple control: newline, return, backspace, tab.
+   unsigned char so a byte above 127 is not a negative number. */
 static void screen_feed(struct screen *s, unsigned char ch) {
     if (s->state == 1) {
         if (ch == '[') {
@@ -337,6 +377,8 @@ static void restore_termios(void) {
     }
 }
 
+/* write() can send fewer bytes than asked. Keep going until n are out.
+   EINTR means a signal interrupted it; try the same write again. */
 static void write_all(int fd, const char *buf, size_t n) {
     size_t off = 0;
     while (off < n) {
@@ -351,6 +393,8 @@ static void write_all(int fd, const char *buf, size_t n) {
     }
 }
 
+/* Tell the outer terminal which pen to use for the next run of cells.
+   These bytes go to the glass. They are not fed back into screen_feed. */
 static void redraw_style(int fg, int bold) {
     char seq[32];
     int n;
@@ -366,6 +410,8 @@ static void redraw_style(int fg, int bold) {
     write_all(STDOUT_FILENO, seq, (size_t)n);
 }
 
+/* Paint the grid. ESC [ row ; col H is 1-based, so cur_r + 1.
+   Cells with the same look are sent as one run, then the cursor is parked. */
 static void screen_redraw(struct screen *s) {
     write_all(STDOUT_FILENO, "\033[H", 3);
     for (int r = 0; r < s->rows; r++) {
@@ -396,6 +442,10 @@ static void screen_redraw(struct screen *s) {
     write_all(STDOUT_FILENO, seq, (size_t)n);
 }
 
+/* Keys must reach uthsh one byte at a time, and this program must not
+   echo them (the PTY echoes) or treat Ctrl-C as "kill me".
+   Output flags are left alone. Clearing them makes each new line start
+   further right than the one above it. */
 static int set_raw_input(void) {
     struct termios raw;
 
@@ -406,6 +456,8 @@ static int set_raw_input(void) {
 
     termios_saved = 1;
     raw = orig_termios;
+    /* ECHO off, no line editing (ICANON), Ctrl-C is a byte (ISIG),
+       Ctrl-S is a byte (IXON), Enter is not rewritten before we see it (ICRNL). */
     raw.c_lflag &= ~(ECHO | ICANON | ISIG | IEXTEN);
     raw.c_iflag &= ~(IXON | ICRNL);
     raw.c_cc[VMIN] = 1;
@@ -418,6 +470,10 @@ static int set_raw_input(void) {
     return 0;
 }
 
+/* Ask Linux for a PTY. We keep the master end.
+   O_NOCTTY: do not attach it to this process. The child attaches the slave.
+   grantpt / unlockpt let us open that slave. ptsname's buffer can be
+   overwritten later, so the path is copied into slave_name. */
 static int open_master(char *slave_name, size_t slave_name_size) {
     int master = posix_openpt(O_RDWR | O_NOCTTY);
 
@@ -446,6 +502,8 @@ static int open_master(char *slave_name, size_t slave_name_size) {
     return master;
 }
 
+/* Give the fake terminal the same rows and columns as the one we are in.
+   Otherwise ls wraps at the wrong width. */
 static void copy_winsize(int master) {
     struct winsize ws;
     if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0) {
@@ -453,6 +511,10 @@ static void copy_winsize(int master) {
     }
 }
 
+/* Child: new session, slave becomes its keyboard and screen, then bin/uthsh.
+   The child closes the master. If it kept that end open, we would never
+   see "the shell exited" on a later read.
+   _exit, not return: return would run the rest of main in the child. */
 static pid_t start_shell(int master, const char *slave_name) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -485,6 +547,8 @@ static pid_t start_shell(int master, const char *slave_name) {
     return pid;
 }
 
+/* SIGWINCH fires when the outer terminal is dragged.
+   Only set the flag. ioctl and redraw happen back in the loop. */
 static void on_winch(int signo) {
     (void)signo;
     winch_flag = 1;
@@ -506,6 +570,7 @@ int main(void) {
     } else {
         screen_init(&screen, 24, 80);
     }
+    /* Clear the glass once, so the old prompt is not sitting under the grid. */
     write_all(STDOUT_FILENO, "\033[2J", 4);
 
     pid_t pid = start_shell(master, slave_name);
@@ -521,6 +586,8 @@ int main(void) {
         return 1;
     }
 
+    /* Wait on the keyboard and the master together. Reading only one of
+       them would freeze whenever the other side had something to say. */
     struct pollfd pfds[2];
     pfds[0].fd = STDIN_FILENO;
     pfds[0].events = POLLIN;
@@ -539,6 +606,8 @@ int main(void) {
             break;
         }
 
+        /* Resize our grid, then tell the PTY. The shell hears that as SIGWINCH.
+           The cable gets the real size. The grid still stops at MAX_ROWS / MAX_COLS. */
         if (winch_flag) {
             winch_flag = 0;
             struct winsize ws;
@@ -550,6 +619,8 @@ int main(void) {
             }
         }
 
+        /* Keys go straight to the shell. We do not put them in the grid.
+           The shell (through the PTY) echoes them back, and that echo is what we draw. */
         if (pfds[0].revents & POLLIN) {
             char buf[256];
             ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
@@ -559,6 +630,7 @@ int main(void) {
             write_all(master, buf, (size_t)n);
         }
 
+        /* Bytes from the shell. POLLHUP means the slave closed: uthsh exited. */
         if (pfds[1].revents & (POLLIN | POLLHUP)) {
             char buf[256];
             ssize_t n = read(master, buf, sizeof buf);

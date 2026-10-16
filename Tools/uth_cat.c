@@ -1,5 +1,12 @@
+/* uth_cat
+   Copy bytes to the screen. With no path, the bytes come from the
+   keyboard (or from a pipe). With paths, each file is printed in order.
+   A missing file is reported and the remaining files still run. */
+
 #include <stdio.h>
 
+/* Read one byte at a time until the stream ends. int, not char,
+   because EOF is -1 and a real byte must not be confused with it. */
 static void copy_stream(FILE *in) {
     int c;
 

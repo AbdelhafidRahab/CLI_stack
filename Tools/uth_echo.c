@@ -1,3 +1,8 @@
+/* uth_echo
+   Print the words after the program name, separated by spaces.
+   uth_echo hello world  ->  hello world
+   With no words, print only the newline. */
+
 #include <stdio.h>
 
 int main(int argc, char *argv[]) {
